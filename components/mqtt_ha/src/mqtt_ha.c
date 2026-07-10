@@ -419,6 +419,14 @@ static void handle_light_command(int type, int index, const char *data, int data
         new_state.brightness = 255;
     }
 
+    /**
+     * 修复bug：需要点两次才能关闭
+     * 原因：HA发送OFF命令后，设备立即回传状态，但此时HA还没处理完
+     *       导致HA状态不同步，需要再点一次
+     * 修复：加100ms延迟，确保HA处理完命令后再回传状态
+     */
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     switch (type) {
         case 0:
             led_pwm_rgb_set_state(index, &new_state);
