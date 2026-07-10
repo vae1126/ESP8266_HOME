@@ -390,6 +390,8 @@ static void handle_light_command(int type, int index, const char *data, int data
         cJSON *brightness = cJSON_GetObjectItem(root, "brightness");
         if (brightness && cJSON_IsNumber(brightness)) {
             new_state.brightness = (uint8_t)brightness->valueint;
+            /* 调节亮度时自动开灯 */
+            new_state.state = true;
         }
 
         cJSON *color = cJSON_GetObjectItem(root, "color");
@@ -400,6 +402,8 @@ static void handle_light_command(int type, int index, const char *data, int data
             if (r && cJSON_IsNumber(r)) new_state.red = (uint8_t)r->valueint;
             if (g && cJSON_IsNumber(g)) new_state.green = (uint8_t)g->valueint;
             if (b && cJSON_IsNumber(b)) new_state.blue = (uint8_t)b->valueint;
+            /* 调节颜色时自动开灯 */
+            new_state.state = true;
         }
 
         cJSON_Delete(root);
