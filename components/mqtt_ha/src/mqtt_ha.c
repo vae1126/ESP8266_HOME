@@ -295,31 +295,29 @@ void mqtt_ha_publish_discovery(void)
 /**
  * @brief  发布灯光状态到MQTT
  *
- * 修复bug：关闭状态下也需要发送brightness和color
- * 否则HA无法正确跟踪灯光状态，导致无法开关
- *
  * HA MQTT JSON schema要求：
  *   state: "ON" / "OFF" (必须)
- *   brightness: 0-255 (可选，但建议始终发送)
- *   color: {r, g, b} (可选，RGB灯需要)
+ *   brightness: 0-255 (仅在ON时发送)
+ *   color: {r, g, b} (仅在ON时发送)
+ *
+ * 注意：关闭时不能发送brightness，否则HA会认为灯应该亮，自动发送ON命令
  */
 static void publish_light_state(const char *topic, const led_state_t *state)
 {
     cJSON *json = cJSON_CreateObject();
     if (!json) return;
 
-    /* 始终发送state */
     cJSON_AddStringToObject(json, "state", state->state ? "ON" : "OFF");
 
-    /* 始终发送brightness，即使关闭状态 */
-    cJSON_AddNumberToObject(json, "brightness", state->brightness);
-
-    /* 始终发送color */
-    cJSON *color = cJSON_CreateObject();
-    cJSON_AddNumberToObject(color, "r", state->red);
-    cJSON_AddNumberToObject(color, "g", state->green);
-    cJSON_AddNumberToObject(color, "b", state->blue);
-    cJSON_AddItemToObject(json, "color", color);
+    /* 只在开启时发送brightness和color */
+    if (state->state) {
+        cJSON_AddNumberToObject(json, "brightness", state->brightness);
+        cJSON *color = cJSON_CreateObject();
+        cJSON_AddNumberToObject(color, "r", state->red);
+        cJSON_AddNumberToObject(color, "g", state->green);
+        cJSON_AddNumberToObject(color, "b", state->blue);
+        cJSON_AddItemToObject(json, "color", color);
+    }
 
     char *str = cJSON_PrintUnformatted(json);
     if (str) {

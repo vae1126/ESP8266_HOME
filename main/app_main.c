@@ -37,14 +37,14 @@ void app_main(void)
         nvs_flash_init();
     }
 
-    /* 2. 初始化设备ID */
-    device_id_init();
-
-    /* 3. 初始化LED/开关控制 */
+    /* 2. 初始化LED/开关控制 */
     led_control_init();
 
-    /* 4. 初始化WiFi（阻塞） */
+    /* 3. 初始化WiFi（阻塞） - 必须在device_id之前，因为需要MAC地址 */
     wifi_manager_init();
+
+    /* 4. 初始化设备ID - WiFi连接后才能读取MAC地址 */
+    device_id_init();
 
     /* 5. 初始化MQTT */
     mqtt_ha_init();
