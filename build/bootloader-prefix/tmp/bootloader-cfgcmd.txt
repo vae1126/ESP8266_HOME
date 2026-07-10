@@ -1,1 +1,0 @@
-cmd='/usr/bin/cmake;-DSDKCONFIG=/home/ait-tch/esp/Project/tcp_refactored/sdkconfig;-DIDF_PATH=/home/ait-tch/esp/ESP8266_RTOS_SDK;-DIDF_TARGET=esp8266;-DPYTHON_DEPS_CHECKED=1;-DEXTRA_COMPONENT_DIRS=/home/ait-tch/esp/ESP8266_RTOS_SDK/components/bootloader;-DLEGACY_INCLUDE_COMMON_HEADERS=;-GNinja;-S;<SOURCE_DIR><SOURCE_SUBDIR>;-B;<BINARY_DIR>'
