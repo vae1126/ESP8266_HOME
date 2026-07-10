@@ -1,0 +1,9 @@
+menu "MQTT Configuration"
+
+    config MQTT_BROKER_URL
+        string "MQTT Broker URL"
+        default "mqtt://mqtt.eclipse.org"
+        help
+            MQTT broker URL. Example: mqtt://192.168.1.100:1883
+
+endmenu
