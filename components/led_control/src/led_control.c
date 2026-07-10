@@ -2,23 +2,21 @@
  * @file    led_control.c
  * @brief   统一LED控制模块实现 (ESP8266版本)
  *
- * 本模块支持4种设备类型，每种支持多实例：
- *   - PWM RGB 灯：需要3个GPIO（红、绿、蓝），支持颜色和亮度调节
- *   - PWM 单色灯：需要1个GPIO，支持亮度调节
- *   - WS2812 灯带：需要1个GPIO，支持逐像素RGB控制（简化版，仅开关）
- *   - 继电器/开关：需要1个GPIO，仅开关控制
+ * 支持4种设备类型，每种支持多实例：
+ *   - PWM RGB 灯：3个GPIO（R/G/B），支持颜色和亮度调节
+ *   - PWM 单色灯：1个GPIO，支持亮度调节
+ *   - WS2812 灯带：1个GPIO，支持逐像素RGB控制
+ *   - 继电器/开关：1个GPIO，仅开关控制
  *
- * 与ESP32-C3版本的主要区别：
- *   - ESP32-C3使用硬件LEDC外设实现PWM，精度高、CPU占用低
- *   - ESP8266使用软件PWM库（pwm.h），精度稍低但够用
- *   - ESP32-C3使用RMT外设驱动WS2812，ESP8266需要位操作或I2S（本版本简化为开关）
- *   - ESP32-C3支持6个LEDC通道，ESP8266支持8个软件PWM通道
+ * ESP8266 PWM说明：
+ *   - 使用 pwm.h 软件PWM库，最大支持8个通道
+ *   - PWM周期1000us = 1kHz频率
+ *   - 占空比范围：0 ~ PWM_PERIOD (0~1000)
  *
- * NVS持久化：
- *   - 所有设备状态（开/关、亮度、颜色）保存在NVS中
- *   - 重启后自动恢复上次状态
- *   - 命名空间："led_state"
- *   - 键格式："s_0", "s_1"...（单色灯）, "sw_0", "sw_1"...（开关）
+ * WS2812说明：
+ *   - 使用GPIO位操作(bit-banging)方式驱动
+ *   - 需要精确时序：T0H=350ns, T0H=700ns, T1H=700ns, T1L=600ns, Reset>50us
+ *   - ESP8266主频160MHz，每周期6.25ns
  */
 
 #include <stdio.h>
@@ -26,7 +24,7 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
-#include "driver/pwm.h"      /* ESP8266软件PWM库，非ESP32的LEDC */
+#include "driver/pwm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -40,294 +38,504 @@ static const char *TAG = "led_ctrl";
  * 常量定义
  * ========================================================================== */
 
-#define NVS_NAMESPACE "led_state"   /* NVS命名空间，所有LED状态存在这里 */
-#define MAX_PWM_SINGLE 8            /* 最大单色灯实例数 */
-#define MAX_SWITCH 8                /* 最大开关实例数 */
+#define NVS_NAMESPACE "led_state"
+#define MAX_PWM_RGB    2   /* ESP8266最多2个RGB灯(6个PWM通道) */
+#define MAX_PWM_SINGLE 8   /* 最多8个单色灯 */
+#define MAX_WS2812    2   /* 最多2条WS2812灯带 */
+#define MAX_SWITCH    8   /* 最多8个开关 */
 
-/**
- * PWM周期，单位：微秒(us)
- * 1000us = 1kHz频率
- * ESP8266的pwm库使用周期而非频率来配置PWM
- * 与ESP32-C3的LEDC不同，这里没有duty_resolution概念
- * 占空比直接用 0~PWM_PERIOD 的数值表示
- */
-#define PWM_PERIOD 1000
+/* PWM参数 */
+#define PWM_PERIOD 1000   /* 1kHz */
+
+/* WS2812时序参数 (ESP8266 160MHz, 1周期=6.25ns) */
+#define WS2812_T0H_CYCLES 56   /* 350ns / 6.25ns = 56 */
+#define WS2812_T0L_CYCLES 112  /* 700ns / 6.25ns = 112 */
+#define WS2812_T1H_CYCLES 112  /* 700ns / 6.25ns = 112 */
+#define WS2812_T1L_CYCLES 56   /* 350ns / 6.25ns = 56 */
+#define WS2812_RESET_US 60     /* 复位时间 >50us */
 
 /* ==========================================================================
  * 状态存储
  * ========================================================================== */
 
-/**
- * 单色灯状态数组
- * 每个元素保存一个灯的完整状态：开/关、亮度、RGB颜色
- * 对于单色灯，只使用 state 和 brightness 字段
- */
+/* PWM RGB灯状态 */
+static led_state_t rgb_states[MAX_PWM_RGB] = {0};
+static uint32_t rgb_r_duties[MAX_PWM_RGB] = {0};
+static uint32_t rgb_g_duties[MAX_PWM_RGB] = {0};
+static uint32_t rgb_b_duties[MAX_PWM_RGB] = {0};
+
+/* 单色灯状态 */
 static led_state_t single_states[MAX_PWM_SINGLE] = {0};
-
-/**
- * 开关状态数组
- * true=开, false=关
- */
-static bool switch_states[MAX_SWITCH] = {false};
-
-/**
- * PWM GPIO引脚数组
- * 传给 pwm_init() 函数，告诉PWM库控制哪些引脚
- */
-static uint32_t single_gpios[MAX_PWM_SINGLE] = {0};
-
-/**
- * PWM占空比数组
- * 传给 pwm_init() 函数，设置每个通道的初始占空比
- * 值范围：0 ~ PWM_PERIOD (0~1000)
- */
 static uint32_t single_duties[MAX_PWM_SINGLE] = {0};
 
+/* WS2812状态 */
+static led_state_t ws2812_states[MAX_WS2812] = {0};
+
+/* 开关状态 */
+static bool switch_states[MAX_SWITCH] = {false};
+
+/* WS2812像素缓冲区 */
+#define WS2812_MAX_LEDS 256
+static uint8_t ws2812_pixels[MAX_WS2812][WS2812_MAX_LEDS * 3] = {0};
+
 /* ==========================================================================
- * NVS 持久化函数
+ * NVS 持久化
  * ========================================================================== */
 
-/**
- * @brief  保存单色灯状态到NVS
- *
- * 将 led_state_t 结构体以 blob 形式存入NVS
- * 重启后可通过 load_single_state() 恢复
- *
- * @param index  灯的索引 (0-based)
- * @param state  要保存的状态指针
- */
-static void save_single_state(int index, const led_state_t *state)
+static void save_state_blob(const char *prefix, int index, const void *data, size_t size)
 {
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
-
     char key[20];
-    snprintf(key, sizeof(key), "s_%d", index);  /* 键名如 "s_0", "s_1" */
-    nvs_set_blob(handle, key, state, sizeof(led_state_t));
+    snprintf(key, sizeof(key), "%s_%d", prefix, index);
+    nvs_set_blob(handle, key, data, size);
     nvs_commit(handle);
     nvs_close(handle);
 }
 
-/**
- * @brief  从NVS加载单色灯状态
- *
- * @param index  灯的索引 (0-based)
- * @param state  输出参数，加载的状态写入此处
- * @return true=加载成功, false=NVS中无数据
- */
-static bool load_single_state(int index, led_state_t *state)
+static bool load_state_blob(const char *prefix, int index, void *data, size_t size)
 {
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
-
     char key[20];
-    snprintf(key, sizeof(key), "s_%d", index);
-    size_t size = sizeof(led_state_t);
-    esp_err_t err = nvs_get_blob(handle, key, state, &size);
+    snprintf(key, sizeof(key), "%s_%d", prefix, index);
+    size_t loaded = size;
+    esp_err_t err = nvs_get_blob(handle, key, data, &loaded);
     nvs_close(handle);
-    return (err == ESP_OK && size == sizeof(led_state_t));
+    return (err == ESP_OK && loaded == size);
 }
 
-/**
- * @brief  保存开关状态到NVS
- *
- * 开关只有开/关两种状态，用 uint8_t (0/1) 存储即可
- */
 static void save_switch_state(int index, bool state)
 {
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
-
     char key[20];
-    snprintf(key, sizeof(key), "sw_%d", index);  /* 键名如 "sw_0", "sw_1" */
-    uint8_t val = state ? 1 : 0;
-    nvs_set_u8(handle, key, val);
+    snprintf(key, sizeof(key), "sw_%d", index);
+    nvs_set_u8(handle, key, state ? 1 : 0);
     nvs_commit(handle);
     nvs_close(handle);
 }
 
-/**
- * @brief  从NVS加载开关状态
- */
 static bool load_switch_state(int index)
 {
     nvs_handle_t handle;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return false;
-
     char key[20];
     snprintf(key, sizeof(key), "sw_%d", index);
     uint8_t val = 0;
-    esp_err_t err = nvs_get_u8(handle, key, &val);
+    nvs_get_u8(handle, key, &val);
     nvs_close(handle);
-    return (err == ESP_OK && val != 0);
+    return (val != 0);
 }
 
-/**
- * @brief  加载所有设备状态
- *
- * 在 led_control_init() 中调用，从NVS恢复所有设备的上次状态
- * 如果NVS中没有数据（首次启动），使用默认值
- */
 static void load_all_states(void)
 {
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_RGB
+    for (int i = 0; i < CONFIG_PWM_RGB_COUNT && i < MAX_PWM_RGB; i++) {
+        if (!load_state_blob("rgb", i, &rgb_states[i], sizeof(led_state_t))) {
+            rgb_states[i] = (led_state_t){.state=false, .brightness=255, .red=255, .green=255, .blue=255};
+        }
+    }
+#endif
 #ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_SINGLE
     for (int i = 0; i < CONFIG_PWM_SINGLE_COUNT && i < MAX_PWM_SINGLE; i++) {
-        if (!load_single_state(i, &single_states[i])) {
-            /* 首次启动，NVS无数据，使用默认值 */
-            single_states[i].state = false;       /* 默认关闭 */
-            single_states[i].brightness = 255;     /* 默认最大亮度 */
-            single_states[i].red = 255;
-            single_states[i].green = 255;
-            single_states[i].blue = 255;
+        if (!load_state_blob("s", i, &single_states[i], sizeof(led_state_t))) {
+            single_states[i] = (led_state_t){.state=false, .brightness=255, .red=255, .green=255, .blue=255};
+        }
+    }
+#endif
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_WS2812
+    for (int i = 0; i < CONFIG_WS2812_COUNT && i < MAX_WS2812; i++) {
+        if (!load_state_blob("ws", i, &ws2812_states[i], sizeof(led_state_t))) {
+            ws2812_states[i] = (led_state_t){.state=false, .brightness=255, .red=255, .green=255, .blue=255};
         }
     }
 #endif
 #ifdef CONFIG_DEVICE_TYPE_SWITCH
     for (int i = 0; i < CONFIG_SWITCH_COUNT && i < MAX_SWITCH; i++) {
-        switch_states[i] = load_switch_state(i);  /* 默认false（关闭） */
+        switch_states[i] = load_switch_state(i);
     }
 #endif
     ESP_LOGI(TAG, "All states loaded from NVS");
 }
 
 /* ==========================================================================
- * PWM 单色灯实现
+ * WS2812 位操作驱动
  *
- * ESP8266 PWM库 API 说明：
- *   pwm_init(period, duties, channel_num, pin_num)
- *     - period: PWM周期（微秒），如1000=1kHz
- *     - duties: 各通道初始占空比数组（0~period）
- *     - channel_num: 通道数
- *     - pin_num: GPIO引脚数组
- *   pwm_set_duty(channel, duty) - 设置指定通道的占空比
- *   pwm_start() - 应用设置，立即生效
- *
- * 与ESP32-C3的区别：
- *   ESP32-C3使用LEDC硬件外设：
- *     ledc_timer_config() - 配置定时器（频率、分辨率）
- *     ledc_channel_config() - 配置通道（GPIO、定时器绑定）
- *     ledc_set_duty() + ledc_update_duty() - 设置占空比
- *   ESP8266使用软件PWM：
- *     pwm_init() - 一次性配置所有通道
- *     pwm_set_duty() + pwm_start() - 设置占空比并生效
+ * ESP8266没有RMT外设，使用GPIO位操作实现WS2812时序
+ * 通过精确的nop循环控制高低电平持续时间
  * ========================================================================== */
 
-#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_SINGLE
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_WS2812
 
 /**
- * @brief  初始化PWM单色灯
+ * @brief  发送1字节数据到WS2812
  *
- * 1. 收集所有单色灯的GPIO引脚
- * 2. 计算初始占空比（根据NVS恢复的状态）
- * 3. 调用 pwm_init() 初始化PWM库
- * 4. 调用 pwm_start() 启动PWM输出
- * 5. 执行LED闪烁测试，验证GPIO工作正常
+ * WS2812协议：
+ *   - 发送1: 高电平700ns, 低电平600ns
+ *   - 发送0: 高电平350ns, 低电平700ns
+ *
+ * ESP8266 160MHz下，1个nop约6.25ns
  */
-static void pwm_single_init(void)
+static void IRAM_ATTR ws2812_send_byte(uint8_t gpio, uint8_t data)
 {
-    ESP_LOGI(TAG, "Initializing %d PWM single lights", CONFIG_PWM_SINGLE_COUNT);
-
-    int count = CONFIG_PWM_SINGLE_COUNT;
-    if (count > MAX_PWM_SINGLE) count = MAX_PWM_SINGLE;
-
-    for (int i = 0; i < count; i++) {
-        pwm_single_config_t cfg = get_pwm_single_config(i);
-        single_gpios[i] = cfg.gpio;
-
-        /**
-         * 计算初始占空比
-         * 对于低电平点亮(active_low)的LED：
-         *   - duty=0 → GPIO始终低电平 → LED全亮
-         *   - duty=PWM_PERIOD → GPIO始终高电平 → LED全灭
-         * 对于高电平点亮(active_high)的LED：
-         *   - duty=0 → GPIO始终低电平 → LED全灭
-         *   - duty=PWM_PERIOD → GPIO始终高电平 → LED全亮
-         */
-        if (single_states[i].state) {
-            /* LED开启：根据亮度计算占空比 */
-            uint32_t duty = single_states[i].brightness * PWM_PERIOD / 255;
-            if (!cfg.active_high) {
-                duty = PWM_PERIOD - duty;  /* 低电平点亮需要反转 */
-            }
-            single_duties[i] = duty;
+    for (int i = 7; i >= 0; i--) {
+        if (data & (1 << i)) {
+            /* 发送1 */
+            GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDR, 1 << gpio);
+            __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop");
+            GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDR, 1 << gpio);
+            __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop");
         } else {
-            /* LED关闭 */
-            single_duties[i] = cfg.active_high ? 0 : PWM_PERIOD;
+            /* 发送0 */
+            GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDR, 1 << gpio);
+            __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop");
+            GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDR, 1 << gpio);
+            __asm__ __volatile__("nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;"
+                                 "nop;nop;nop;nop;nop;nop;nop;nop;nop;nop;nop");
         }
-
-        ESP_LOGI(TAG, "PWM Single[%d]: GPIO %d active_%s state %s brightness %d duty %d",
-                 i, cfg.gpio, cfg.active_high ? "high" : "low",
-                 single_states[i].state ? "ON" : "OFF",
-                 single_states[i].brightness, single_duties[i]);
     }
-
-    /* 初始化PWM库 */
-    esp_err_t ret = pwm_init(PWM_PERIOD, single_duties, count, single_gpios);
-    ESP_LOGI(TAG, "pwm_init returned: %d", ret);
-    pwm_start();  /* 必须调用pwm_start()才能开始输出PWM信号 */
-    ESP_LOGI(TAG, "pwm_start done");
-
-    /**
-     * 启动测试：闪烁LED 3次
-     * 验证GPIO接线正确、PWM输出正常
-     * 如果LED不闪烁，请检查：
-     *   1. GPIO引脚号是否正确
-     *   2. LED是否正确连接（正极→GPIO，负极→GND，或反之）
-     *   3. 是否需要限流电阻
-     */
-    ESP_LOGI(TAG, "LED test: blinking 3 times...");
-    for (int j = 0; j < 3; j++) {
-        pwm_set_duty(0, 0);           /* 占空比=0 → 低电平 → LED亮(active_low) */
-        pwm_start();
-        vTaskDelay(pdMS_TO_TICKS(500));
-        pwm_set_duty(0, PWM_PERIOD);  /* 占空比=PWM_PERIOD → 高电平 → LED灭 */
-        pwm_start();
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-    ESP_LOGI(TAG, "LED test done");
 }
 
 /**
- * @brief  设置单色灯状态
+ * @brief  刷新WS2812像素缓冲区到灯带
+ */
+static void ws2812_refresh(int index)
+{
+    ws2812_config_t cfg = get_ws2812_config(index);
+    if (cfg.gpio < 0 || cfg.num_leds <= 0) return;
+
+    /* 关中断，保证时序精确 */
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    taskENTER_CRITICAL(&mux);
+
+    for (int i = 0; i < cfg.num_leds && i < WS2812_MAX_LEDS; i++) {
+        int offset = i * 3;
+        ws2812_send_byte(cfg.gpio, ws2812_pixels[index][offset + 1]);  /* G */
+        ws2812_send_byte(cfg.gpio, ws2812_pixels[index][offset]);      /* R */
+        ws2812_send_byte(cfg.gpio, ws2812_pixels[index][offset + 2]);  /* B */
+    }
+
+    taskEXIT_CRITICAL(&mux);
+
+    /* 复位信号 */
+    ets_delay_us(WS2812_RESET_US);
+}
+
+/**
+ * @brief  设置WS2812单个像素颜色
+ */
+static void ws2812_set_pixel(int index, int pixel, uint8_t r, uint8_t g, uint8_t b)
+{
+    ws2812_config_t cfg = get_ws2812_config(index);
+    if (pixel < 0 || pixel >= cfg.num_leds || pixel >= WS2812_MAX_LEDS) return;
+
+    int offset = pixel * 3;
+    ws2812_pixels[index][offset] = r;
+    ws2812_pixels[index][offset + 1] = g;
+    ws2812_pixels[index][offset + 2] = b;
+}
+
+/**
+ * @brief  清空WS2812所有像素
+ */
+static void ws2812_clear(int index)
+{
+    ws2812_config_t cfg = get_ws2812_config(index);
+    memset(ws2812_pixels[index], 0, cfg.num_leds * 3);
+    ws2812_refresh(index);
+}
+#endif
+
+/* ==========================================================================
+ * PWM 初始化
+ * ========================================================================== */
+
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_RGB
+/**
+ * @brief  初始化PWM RGB灯
+ *
+ * ESP8266 PWM库使用方式：
+ *   1. 收集所有RGB通道的GPIO和初始占空比
+ *   2. 调用 pwm_init() 一次性初始化所有通道
+ *   3. 调用 pwm_start() 开始输出
+ *
+ * 每个RGB灯需要3个PWM通道（R/G/B）
+ * ESP8266最多支持8个PWM通道，所以最多2个RGB灯(6通道)
+ */
+static void pwm_rgb_init(void)
+{
+    int count = CONFIG_PWM_RGB_COUNT;
+    if (count > MAX_PWM_RGB) count = MAX_PWM_RGB;
+
+    /* 收集所有RGB通道的GPIO和占空比 */
+    uint32_t all_gpios[MAX_PWM_RGB * 3];
+    uint32_t all_duties[MAX_PWM_RGB * 3];
+    int channel = 0;
+
+    for (int i = 0; i < count; i++) {
+        pwm_rgb_config_t cfg = get_pwm_rgb_config(i);
+
+        /* 根据状态计算初始占空比 */
+        if (rgb_states[i].state) {
+            uint8_t r = (rgb_states[i].red * rgb_states[i].brightness) / 255;
+            uint8_t g = (rgb_states[i].green * rgb_states[i].brightness) / 255;
+            uint8_t b = (rgb_states[i].blue * rgb_states[i].brightness) / 255;
+            rgb_r_duties[i] = cfg.active_high ? (r * PWM_PERIOD / 255) : (PWM_PERIOD - r * PWM_PERIOD / 255);
+            rgb_g_duties[i] = cfg.active_high ? (g * PWM_PERIOD / 255) : (PWM_PERIOD - g * PWM_PERIOD / 255);
+            rgb_b_duties[i] = cfg.active_high ? (b * PWM_PERIOD / 255) : (PWM_PERIOD - b * PWM_PERIOD / 255);
+        } else {
+            rgb_r_duties[i] = cfg.active_high ? 0 : PWM_PERIOD;
+            rgb_g_duties[i] = cfg.active_high ? 0 : PWM_PERIOD;
+            rgb_b_duties[i] = cfg.active_high ? 0 : PWM_PERIOD;
+        }
+
+        all_gpios[channel] = cfg.r_gpio;
+        all_duties[channel] = rgb_r_duties[i];
+        channel++;
+        all_gpios[channel] = cfg.g_gpio;
+        all_duties[channel] = rgb_g_duties[i];
+        channel++;
+        all_gpios[channel] = cfg.b_gpio;
+        all_duties[channel] = rgb_b_duties[i];
+        channel++;
+
+        ESP_LOGI(TAG, "PWM RGB[%d]: R=%d G=%d B=%d active_%s duty=%d,%d,%d",
+                 i, cfg.r_gpio, cfg.g_gpio, cfg.b_gpio,
+                 cfg.active_high ? "high" : "low",
+                 rgb_r_duties[i], rgb_g_duties[i], rgb_b_duties[i]);
+    }
+
+    pwm_init(PWM_PERIOD, all_duties, channel, all_gpios);
+    pwm_start();
+}
+#endif
+
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_SINGLE
+static void pwm_single_init(void)
+{
+    int count = CONFIG_PWM_SINGLE_COUNT;
+    if (count > MAX_PWM_SINGLE) count = MAX_PWM_SINGLE;
+
+    uint32_t gpios[MAX_PWM_SINGLE];
+    uint32_t duties[MAX_PWM_SINGLE];
+
+    for (int i = 0; i < count; i++) {
+        pwm_single_config_t cfg = get_pwm_single_config(i);
+        gpios[i] = cfg.gpio;
+
+        if (single_states[i].state) {
+            uint32_t duty = single_states[i].brightness * PWM_PERIOD / 255;
+            duties[i] = cfg.active_high ? duty : (PWM_PERIOD - duty);
+        } else {
+            duties[i] = cfg.active_high ? 0 : PWM_PERIOD;
+        }
+
+        ESP_LOGI(TAG, "PWM Single[%d]: GPIO %d duty %d", i, cfg.gpio, duties[i]);
+    }
+
+    pwm_init(PWM_PERIOD, duties, count, gpios);
+    pwm_start();
+}
+#endif
+
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_WS2812
+static void ws2812_init(void)
+{
+    int count = CONFIG_WS2812_COUNT;
+    if (count > MAX_WS2812) count = MAX_WS2812;
+
+    for (int i = 0; i < count; i++) {
+        ws2812_config_t cfg = get_ws2812_config(i);
+        if (cfg.gpio < 0) continue;
+
+        /* 配置GPIO为输出 */
+        gpio_config_t io_conf = {
+            .pin_bit_mask = (1ULL << cfg.gpio),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io_conf);
+        gpio_set_level(cfg.gpio, 0);
+
+        /* 恢复状态 */
+        if (ws2812_states[i].state) {
+            uint8_t r = (ws2812_states[i].red * ws2812_states[i].brightness) / 255;
+            uint8_t g = (ws2812_states[i].green * ws2812_states[i].brightness) / 255;
+            uint8_t b = (ws2812_states[i].blue * ws2812_states[i].brightness) / 255;
+            for (int j = 0; j < cfg.num_leds && j < WS2812_MAX_LEDS; j++) {
+                ws2812_set_pixel(i, j, r, g, b);
+            }
+            ws2812_refresh(i);
+        } else {
+            ws2812_clear(i);
+        }
+
+        ESP_LOGI(TAG, "WS2812[%d]: GPIO %d, %d LEDs", i, cfg.gpio, cfg.num_leds);
+    }
+}
+#endif
+
+#ifdef CONFIG_DEVICE_TYPE_SWITCH
+static void switch_init(void)
+{
+    for (int i = 0; i < CONFIG_SWITCH_COUNT && i < MAX_SWITCH; i++) {
+        switch_config_t cfg = get_switch_config(i);
+        gpio_config_t io_conf = {
+            .pin_bit_mask = (1ULL << cfg.gpio),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io_conf);
+        gpio_set_level(cfg.gpio, cfg.active_high ? 0 : 1);
+        if (switch_states[i]) {
+            gpio_set_level(cfg.gpio, cfg.active_high ? 1 : 0);
+        }
+        ESP_LOGI(TAG, "Switch[%d]: GPIO %d", i, cfg.gpio);
+    }
+}
+#endif
+
+/* ==========================================================================
+ * 公开 API - PWM RGB 灯
+ * ========================================================================== */
+
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_RGB
+/**
+ * @brief  设置PWM RGB灯状态
  *
  * @param index  灯的索引 (0-based)
- * @param state  目标状态（开/关、亮度、颜色）
+ * @param state  目标状态
  *
- * 处理流程：
+ * 状态更新逻辑：
  * 1. 保存新状态到内存
- * 2. 根据亮度和active_high计算PWM占空比
- * 3. 调用 pwm_set_duty() 更新占空比
- * 4. 调用 pwm_start() 使设置生效
- * 5. 保存状态到NVS（持久化）
+ * 2. 如果state=false(关闭)，R/G/B全部设为0
+ * 3. 如果state=true(开启)，根据brightness缩放R/G/B
+ * 4. 根据active_high配置反转输出
+ * 5. 更新PWM占空比并保存到NVS
+ */
+void led_pwm_rgb_set_state(int index, const led_state_t *state)
+{
+    if (index < 0 || index >= MAX_PWM_RGB || !state) return;
+
+    pwm_rgb_config_t cfg = get_pwm_rgb_config(index);
+    rgb_states[index] = *state;
+
+    uint8_t r, g, b;
+    if (state->state) {
+        /* 开启状态：根据亮度缩放颜色 */
+        r = (state->red * state->brightness) / 255;
+        g = (state->green * state->brightness) / 255;
+        b = (state->blue * state->brightness) / 255;
+    } else {
+        /* 关闭状态：所有颜色为0 */
+        r = g = b = 0;
+    }
+
+    /* 计算PWM占空比，考虑active_high */
+    if (cfg.active_high) {
+        rgb_r_duties[index] = r * PWM_PERIOD / 255;
+        rgb_g_duties[index] = g * PWM_PERIOD / 255;
+        rgb_b_duties[index] = b * PWM_PERIOD / 255;
+    } else {
+        rgb_r_duties[index] = PWM_PERIOD - r * PWM_PERIOD / 255;
+        rgb_g_duties[index] = PWM_PERIOD - g * PWM_PERIOD / 255;
+        rgb_b_duties[index] = PWM_PERIOD - b * PWM_PERIOD / 255;
+    }
+
+    /* 更新PWM */
+    pwm_set_duty(index * 3, rgb_r_duties[index]);
+    pwm_set_duty(index * 3 + 1, rgb_g_duties[index]);
+    pwm_set_duty(index * 3 + 2, rgb_b_duties[index]);
+    pwm_start();
+
+    save_state_blob("rgb", index, &rgb_states[index], sizeof(led_state_t));
+
+    ESP_LOGI(TAG, "RGB %d -> %s brightness %d color %d,%d,%d",
+             index, state->state ? "ON" : "OFF", state->brightness,
+             state->red, state->green, state->blue);
+}
+
+led_state_t* led_pwm_rgb_get_state(int index)
+{
+    if (index < 0 || index >= MAX_PWM_RGB) return NULL;
+    return &rgb_states[index];
+}
+#else
+void led_pwm_rgb_set_state(int index, const led_state_t *state) {}
+led_state_t* led_pwm_rgb_get_state(int index) { return NULL; }
+#endif
+
+/* ==========================================================================
+ * 公开 API - 单色灯
+ * ========================================================================== */
+
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_SINGLE
+/**
+ * @brief  设置单色灯状态
+ *
+ * 修复bug：之前只根据brightness计算占空比，没有正确处理state=false(关闭)
+ * 现在逻辑：
+ *   - state=false → duty = 0(active_high) 或 PWM_PERIOD(active_low) → LED灭
+ *   - state=true  → duty = brightness映射 → LED亮
  */
 void led_pwm_single_set_state(int index, const led_state_t *state)
 {
-    if (index < 0 || index >= MAX_PWM_SINGLE) return;
+    if (index < 0 || index >= MAX_PWM_SINGLE || !state) return;
 
-    single_states[index] = *state;
     pwm_single_config_t cfg = get_pwm_single_config(index);
+    single_states[index] = *state;
 
-    /* 计算占空比 */
     uint32_t duty;
     if (state->state) {
-        /* LED开启：brightness 0~255 映射到 0~PWM_PERIOD */
-        duty = state->brightness * PWM_PERIOD / 255;
-        if (!cfg.active_high) {
-            duty = PWM_PERIOD - duty;  /* 低电平点亮反转 */
-        }
+        /* 开启：根据亮度计算占空比 */
+        uint32_t brightness_duty = state->brightness * PWM_PERIOD / 255;
+        duty = cfg.active_high ? brightness_duty : (PWM_PERIOD - brightness_duty);
     } else {
-        /* LED关闭 */
+        /* 关闭 */
         duty = cfg.active_high ? 0 : PWM_PERIOD;
     }
 
-    /* 应用PWM设置 */
+    single_duties[index] = duty;
     pwm_set_duty(index, duty);
-    pwm_start();  /* 必须调用pwm_start()才能生效 */
+    pwm_start();
 
-    /* 持久化到NVS */
-    save_single_state(index, state);
+    save_state_blob("s", index, &single_states[index], sizeof(led_state_t));
 
-    ESP_LOGI(TAG, "PWM Single %d -> %s brightness %d duty %d",
+    ESP_LOGI(TAG, "Single %d -> %s brightness %d duty %d",
              index, state->state ? "ON" : "OFF", state->brightness, duty);
 }
 
@@ -336,134 +544,79 @@ led_state_t* led_pwm_single_get_state(int index)
     if (index < 0 || index >= MAX_PWM_SINGLE) return NULL;
     return &single_states[index];
 }
-
 #else
-/* 未启用单色灯时的空实现 */
 void led_pwm_single_set_state(int index, const led_state_t *state) {}
 led_state_t* led_pwm_single_get_state(int index) { return NULL; }
 #endif
 
 /* ==========================================================================
- * PWM RGB 灯实现（简化版 - 仅日志）
- *
- * ESP32-C3版本使用3个LEDC通道分别控制R/G/B：
- *   ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0 + i*3, r);
- *   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0 + i*3);
- *
- * ESP8266要实现完整RGB PWM需要：
- *   1. 使用3个PWM通道（每个通道控制一个颜色）
- *   2. 或使用软件PWM同时控制3个GPIO
- *
- * 当前版本为简化实现，仅输出日志，不实际控制硬件
- * 如需完整实现，参考ESP8266 pwm_init() API
+ * 公开 API - WS2812
  * ========================================================================== */
 
-static led_state_t dummy_rgb_state = {0};
-
-void led_pwm_rgb_set_state(int index, const led_state_t *state)
-{
-    (void)index;
-    ESP_LOGI(TAG, "RGB state: %d brightness: %d color: %d,%d,%d",
-             state->state, state->brightness, state->red, state->green, state->blue);
-}
-
-led_state_t* led_pwm_rgb_get_state(int index) { (void)index; return &dummy_rgb_state; }
-
-/* ==========================================================================
- * WS2812 灯带实现（简化版 - 仅日志）
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_WS2812
+/**
+ * @brief  设置WS2812灯带状态
  *
- * ESP32-C3版本使用led_strip库 + RMT外设：
- *   led_strip_new_rmt_device() - 创建WS2812设备
- *   led_strip_set_pixel(strip, i, r, g, b) - 设置每个像素颜色
- *   led_strip_refresh(strip) - 刷新显示
- *
- * ESP8266要实现完整WS2812需要：
- *   1. 位操作（bit-banging）：精确时序控制GPIO
- *   2. I2S DMA方式：通过I2S外设生成WS2812时序
- *   3. 使用第三方库如 ws2812_i2s 或 ws2812_bitbang
- *
- * 当前版本为简化实现，仅输出日志
- * 如需完整实现，可参考：
- *   - https://github.com/CHERTS/esp8266-ws2812
- *   - 使用I2S + DMA方式（性能最好）
- * ========================================================================== */
-
-static led_state_t dummy_ws2812_state = {0};
-
+ * 支持逐像素RGB控制：
+ * 1. 如果关闭，清空所有像素
+ * 2. 如果开启，根据brightness缩放颜色，设置所有像素
+ * 3. 刷新到灯带
+ */
 void led_ws2812_set_state(int index, const led_state_t *state)
 {
-    (void)index;
-    ESP_LOGI(TAG, "WS2812 state: %d brightness: %d", state->state, state->brightness);
+    if (index < 0 || index >= MAX_WS2812 || !state) return;
+
+    ws2812_config_t cfg = get_ws2812_config(index);
+    ws2812_states[index] = *state;
+
+    if (!state->state) {
+        /* 关闭：清空所有像素 */
+        ws2812_clear(index);
+    } else {
+        /* 开启：设置所有像素颜色 */
+        uint8_t r = (state->red * state->brightness) / 255;
+        uint8_t g = (state->green * state->brightness) / 255;
+        uint8_t b = (state->blue * state->brightness) / 255;
+
+        for (int i = 0; i < cfg.num_leds && i < WS2812_MAX_LEDS; i++) {
+            ws2812_set_pixel(index, i, r, g, b);
+        }
+        ws2812_refresh(index);
+    }
+
+    save_state_blob("ws", index, &ws2812_states[index], sizeof(led_state_t));
+
+    ESP_LOGI(TAG, "WS2812 %d -> %s brightness %d color %d,%d,%d",
+             index, state->state ? "ON" : "OFF", state->brightness,
+             state->red, state->green, state->blue);
 }
 
-led_state_t* led_ws2812_get_state(int index) { (void)index; return &dummy_ws2812_state; }
+led_state_t* led_ws2812_get_state(int index)
+{
+    if (index < 0 || index >= MAX_WS2812) return NULL;
+    return &ws2812_states[index];
+}
+#else
+void led_ws2812_set_state(int index, const led_state_t *state) {}
+led_state_t* led_ws2812_get_state(int index) { return NULL; }
+#endif
 
 /* ==========================================================================
- * 开关/继电器实现
- *
- * 最简单的控制方式：GPIO高/低电平
- * ESP32-C3和ESP8266的GPIO API基本相同：
- *   gpio_config() - 配置GPIO参数
- *   gpio_set_level() - 设置输出电平
+ * 公开 API - 开关
  * ========================================================================== */
 
 #ifdef CONFIG_DEVICE_TYPE_SWITCH
-
-/**
- * @brief  初始化开关/继电器
- *
- * 配置GPIO为输出模式，恢复NVS中保存的状态
- */
-static void switch_init(void)
-{
-    ESP_LOGI(TAG, "Initializing %d switches", CONFIG_SWITCH_COUNT);
-
-    for (int i = 0; i < CONFIG_SWITCH_COUNT && i < MAX_SWITCH; i++) {
-        switch_config_t cfg = get_switch_config(i);
-
-        /* 配置GPIO */
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << cfg.gpio),    /* GPIO引脚掩码 */
-            .mode = GPIO_MODE_OUTPUT,               /* 输出模式 */
-            .pull_up_en = GPIO_PULLUP_DISABLE,      /* 禁用上拉 */
-            .pull_down_en = GPIO_PULLDOWN_DISABLE,  /* 禁用下拉 */
-            .intr_type = GPIO_INTR_DISABLE,         /* 禁用中断 */
-        };
-        gpio_config(&io_conf);
-
-        /* 初始关闭 */
-        gpio_set_level(cfg.gpio, cfg.active_high ? 0 : 1);
-
-        /* 恢复NVS状态 */
-        if (switch_states[i]) {
-            gpio_set_level(cfg.gpio, cfg.active_high ? 1 : 0);
-        }
-
-        ESP_LOGI(TAG, "Switch[%d]: GPIO %d active_%s state %s", i,
-                 cfg.gpio, cfg.active_high ? "high" : "low",
-                 switch_states[i] ? "ON" : "OFF");
-    }
-}
-
-/**
- * @brief  设置开关状态
- *
- * @param index  开关索引 (0-based)
- * @param on     true=开, false=关
- */
 void led_switch_set_state(int index, bool on)
 {
     if (index < 0 || index >= MAX_SWITCH) return;
 
     switch_states[index] = on;
     switch_config_t cfg = get_switch_config(index);
-
-    /* 根据active_high配置计算输出电平 */
     int level = on ? (cfg.active_high ? 1 : 0) : (cfg.active_high ? 0 : 1);
     gpio_set_level(cfg.gpio, level);
 
     save_switch_state(index, on);
-    ESP_LOGI(TAG, "Switch %d -> %s (GPIO %d = %d)", index, on ? "ON" : "OFF", cfg.gpio, level);
+    ESP_LOGI(TAG, "Switch %d -> %s", index, on ? "ON" : "OFF");
 }
 
 bool led_switch_get_state(int index)
@@ -477,43 +630,55 @@ bool led_switch_get_state(int index) { return false; }
 #endif
 
 /* ==========================================================================
- * 兼容旧 API（默认操作第一个实例）
+ * 兼容旧 API
  * ========================================================================== */
 
 void led_set_state(const led_state_t *state)
 {
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_RGB
+    led_pwm_rgb_set_state(0, state);
+#elif defined(CONFIG_DEVICE_TYPE_LIGHT_PWM_SINGLE)
     led_pwm_single_set_state(0, state);
+#elif defined(CONFIG_DEVICE_TYPE_LIGHT_WS2812)
+    led_ws2812_set_state(0, state);
+#endif
 }
 
 led_state_t* led_get_state(void)
 {
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_RGB
+    return led_pwm_rgb_get_state(0);
+#elif defined(CONFIG_DEVICE_TYPE_LIGHT_PWM_SINGLE)
     return led_pwm_single_get_state(0);
+#elif defined(CONFIG_DEVICE_TYPE_LIGHT_WS2812)
+    return led_ws2812_get_state(0);
+#else
+    return NULL;
+#endif
 }
 
 /* ==========================================================================
- * 模块初始化入口
+ * 初始化
  * ========================================================================== */
 
-/**
- * @brief  初始化LED控制模块
- *
- * 初始化顺序：
- * 1. 打印设备能力（各类型实例数）
- * 2. 从NVS加载所有设备状态
- * 3. 初始化各类型硬件（PWM、GPIO）
- */
 void led_control_init(void)
 {
     ESP_LOGI(TAG, "LED control init");
 
     device_caps_t caps = get_device_capabilities();
-    ESP_LOGI(TAG, "PWM RGB: %d, Single: %d, WS2812: %d, Switch: %d",
+    ESP_LOGI(TAG, "RGB: %d, Single: %d, WS2812: %d, Switch: %d",
              caps.pwm_rgb_count, caps.pwm_single_count, caps.ws2812_count, caps.switch_count);
 
     load_all_states();
 
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_RGB
+    pwm_rgb_init();
+#endif
 #ifdef CONFIG_DEVICE_TYPE_LIGHT_PWM_SINGLE
     pwm_single_init();
+#endif
+#ifdef CONFIG_DEVICE_TYPE_LIGHT_WS2812
+    ws2812_init();
 #endif
 #ifdef CONFIG_DEVICE_TYPE_SWITCH
     switch_init();
