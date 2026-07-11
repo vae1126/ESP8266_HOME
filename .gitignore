@@ -1,0 +1,13 @@
+# Build output
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# sdkconfig old versions
+sdkconfig.old

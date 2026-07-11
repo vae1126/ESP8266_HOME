@@ -1,0 +1,156 @@
+menu "Device Configuration"
+
+    # ==================== PWM RGB 灯 ====================
+    menu "PWM RGB Light"
+        config DEVICE_TYPE_LIGHT_PWM_RGB
+            bool "Enable PWM RGB Light"
+            default n
+
+        config PWM_RGB_COUNT
+            int "Number of PWM RGB Lights"
+            range 1 2
+            default 1
+            depends on DEVICE_TYPE_LIGHT_PWM_RGB
+
+        config PWM_RGB_1_R_GPIO
+            int "RGB1 Red GPIO"
+            range 0 16
+            default 4
+            depends on DEVICE_TYPE_LIGHT_PWM_RGB
+
+        config PWM_RGB_1_G_GPIO
+            int "RGB1 Green GPIO"
+            range 0 16
+            default 5
+            depends on DEVICE_TYPE_LIGHT_PWM_RGB
+
+        config PWM_RGB_1_B_GPIO
+            int "RGB1 Blue GPIO"
+            range 0 16
+            default 12
+            depends on DEVICE_TYPE_LIGHT_PWM_RGB
+
+        config PWM_RGB_1_ACTIVE_HIGH
+            bool "RGB1 Active High (Common Cathode)"
+            default y
+            depends on DEVICE_TYPE_LIGHT_PWM_RGB
+    endmenu
+
+    # ==================== 单色灯 ====================
+    menu "PWM Single Color Light"
+        config DEVICE_TYPE_LIGHT_PWM_SINGLE
+            bool "Enable PWM Single Color Light"
+            default n
+
+        config PWM_SINGLE_COUNT
+            int "Number of Single Lights"
+            range 1 8
+            default 1
+            depends on DEVICE_TYPE_LIGHT_PWM_SINGLE
+
+        config PWM_SINGLE_1_GPIO
+            int "Single1 GPIO"
+            range 0 16
+            default 2
+            depends on DEVICE_TYPE_LIGHT_PWM_SINGLE
+
+        config PWM_SINGLE_1_ACTIVE_HIGH
+            bool "Single1 Active High"
+            default y
+            depends on DEVICE_TYPE_LIGHT_PWM_SINGLE
+
+        config PWM_SINGLE_2_GPIO
+            int "Single2 GPIO"
+            range 0 16
+            default 5
+            depends on DEVICE_TYPE_LIGHT_PWM_SINGLE && PWM_SINGLE_COUNT >= 2
+
+        config PWM_SINGLE_2_ACTIVE_HIGH
+            bool "Single2 Active High"
+            default y
+            depends on DEVICE_TYPE_LIGHT_PWM_SINGLE && PWM_SINGLE_COUNT >= 2
+    endmenu
+
+    # ==================== WS2812 灯带 ====================
+    menu "WS2812 LED Strip"
+        config DEVICE_TYPE_LIGHT_WS2812
+            bool "Enable WS2812 LED Strip"
+            default n
+
+        config WS2812_COUNT
+            int "Number of WS2812 Strips"
+            range 1 2
+            default 1
+            depends on DEVICE_TYPE_LIGHT_WS2812
+
+        config WS2812_1_GPIO
+            int "WS2812-1 GPIO"
+            range 0 16
+            default 3
+            depends on DEVICE_TYPE_LIGHT_WS2812
+
+        config WS2812_1_NUM
+            int "WS2812-1 LED count"
+            range 1 256
+            default 16
+            depends on DEVICE_TYPE_LIGHT_WS2812
+    endmenu
+
+    # ==================== 继电器/开关 ====================
+    menu "Switch/Relay"
+        config DEVICE_TYPE_SWITCH
+            bool "Enable Switch/Relay"
+            default n
+
+        config SWITCH_COUNT
+            int "Number of Switches"
+            range 1 8
+            default 1
+            depends on DEVICE_TYPE_SWITCH
+
+        config SWITCH_1_GPIO
+            int "Switch1 GPIO"
+            range 0 16
+            default 2
+            depends on DEVICE_TYPE_SWITCH
+
+        config SWITCH_1_ACTIVE_HIGH
+            bool "Switch1 Active High"
+            default n
+            depends on DEVICE_TYPE_SWITCH
+
+        config SWITCH_2_GPIO
+            int "Switch2 GPIO"
+            range 0 16
+            default 5
+            depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 2
+
+        config SWITCH_2_ACTIVE_HIGH
+            bool "Switch2 Active High"
+            default n
+            depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 2
+
+        config SWITCH_3_GPIO
+            int "Switch3 GPIO"
+            range 0 16
+            default 12
+            depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 3
+
+        config SWITCH_3_ACTIVE_HIGH
+            bool "Switch3 Active High"
+            default n
+            depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 3
+
+        config SWITCH_4_GPIO
+            int "Switch4 GPIO"
+            range 0 16
+            default 13
+            depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 4
+
+        config SWITCH_4_ACTIVE_HIGH
+            bool "Switch4 Active High"
+            default n
+            depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 4
+    endmenu
+
+endmenu
