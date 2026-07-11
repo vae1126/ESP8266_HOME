@@ -9,5 +9,6 @@ build/
 .DS_Store
 Thumbs.db
 
-# sdkconfig old versions
+# sdkconfig (local config, use sdkconfig.defaults instead)
+sdkconfig
 sdkconfig.old
