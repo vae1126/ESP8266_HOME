@@ -1,49 +1,34 @@
-/**
- * @file    device_id.h
- * @brief   设备ID和MQTT主题定义
- *
- * 基于MAC地址生成唯一设备ID，构建所有MQTT主题
- */
-
 #ifndef DEVICE_ID_H
 #define DEVICE_ID_H
 
-#include <stdbool.h>
+#include <stddef.h>
+#include "esp_err.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#define FIRMWARE_VERSION "1.0.0"
 
-/* 设备ID长度 (12字符MAC + null) */
-#define DEVICE_ID_LEN 13
-
-/* 主题长度 */
-#define TOPIC_LEN 128
-
-/* 设备名称长度 */
+#define DEVICE_ID_LEN   13
 #define DEVICE_NAME_LEN 64
+#define TOPIC_LEN       128
+#define MQTT_BROKER_URL_LEN 128
 
-/* 全局变量 - 其他模块可直接读取 */
 extern char base_device_id[DEVICE_ID_LEN];
 extern char base_device_name[DEVICE_NAME_LEN];
-
-/* 共享主题 */
 extern char device_avail_topic[TOPIC_LEN];
-extern char rssi_config_topic[TOPIC_LEN];
-extern char rssi_state_topic[TOPIC_LEN];
+
 extern char device_status_topic[TOPIC_LEN];
 extern char device_command_topic[TOPIC_LEN];
 extern char device_response_topic[TOPIC_LEN];
 
-/**
- * @brief  初始化设备ID
- *
- * 读取MAC地址，生成设备ID和所有MQTT主题
- */
-void device_id_init(void);
-
-#ifdef __cplusplus
-}
+#if defined(CONFIG_DEVICE_TYPE_SWITCH)
+extern char switch_config_topics[CONFIG_SWITCH_COUNT][TOPIC_LEN];
+extern char switch_command_topics[CONFIG_SWITCH_COUNT][TOPIC_LEN];
+extern char switch_state_topics[CONFIG_SWITCH_COUNT][TOPIC_LEN];
 #endif
 
-#endif // DEVICE_ID_H
+void device_id_init(void);
+
+char* device_id_get_mqtt_broker(char *url, size_t size);
+
+esp_err_t device_id_set_mqtt_broker(const char *url);
+
+#endif /* DEVICE_ID_H */

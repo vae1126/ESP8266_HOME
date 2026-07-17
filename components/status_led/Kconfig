@@ -1,0 +1,24 @@
+menu "Status LED"
+
+    config STATUS_LED_ENABLE
+        bool "Enable Status LED"
+        default n
+        help
+            Enable status LED that blinks in different patterns
+            to indicate current device state.
+
+    config STATUS_LED_GPIO
+        int "Status LED GPIO"
+        range 0 16
+        default 2
+        depends on STATUS_LED_ENABLE
+
+    config STATUS_LED_ACTIVE_HIGH
+        bool "Status LED Active High"
+        default y
+        depends on STATUS_LED_ENABLE
+        help
+            y = LED on when GPIO high
+            n = LED on when GPIO low
+
+endmenu

@@ -1,9 +1,6 @@
-menu "MQTT Configuration"
-
-    config MQTT_BROKER_URL
-        string "MQTT Broker URL"
-        default "mqtt://mqtt.eclipse.org"
-        help
-            MQTT broker URL. Example: mqtt://192.168.1.100:1883
-
-endmenu
+config MQTT_BROKER_URL
+    string "MQTT Broker URL"
+    default "mqtt://47.121.26.212:1883"
+    help
+        MQTT broker address in mqtt://host:port format.
+        Can be overridden at runtime via device command.

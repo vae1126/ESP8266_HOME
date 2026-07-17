@@ -1,68 +1,54 @@
-/**
- * @file    app_main.c
- * @brief   ESP8266 智能家居 MQTT 控制器
- *
- * 支持：PWM RGB灯、单色灯、WS2812灯带、开关/继电器
- */
-
-#include <stdio.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_system.h"
+#include "device_id.h"
+#include "wifi_manager.h"
+#include "switch_control.h"
+#include "status_led.h"
+#include "mqtt_ha.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "device_id.h"
-#include "led_control.h"
-#include "device_config.h"
-#include "wifi_manager.h"
-#include "mqtt_ha.h"
-#include "ota_upgrade.h"
-#include "rssi_reporter.h"
-#include "version.h"
 
-static const char *TAG = "app_main";
+static const char *TAG = "main";
+
+static void on_wifi_state_change(wifi_manager_state_t state)
+{
+    switch (state) {
+    case WIFI_STATE_SMARTCONFIG:
+        status_led_set_state(STATUS_LED_SMARTCONFIG);
+        break;
+    case WIFI_STATE_CONNECTED:
+        status_led_set_state(STATUS_LED_MQTT_CONNECTING);
+        break;
+    case WIFI_STATE_CONNECTING:
+    default:
+        break;
+    }
+}
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "  ESP8266 Smart Home Controller");
-    ESP_LOGI(TAG, "  Firmware: %s", FIRMWARE_VERSION);
-    ESP_LOGI(TAG, "============================================");
+    ESP_LOGI(TAG, "Starting application...");
 
-    /* 1. 初始化NVS */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition truncated, erasing...");
-        nvs_flash_erase();
-        nvs_flash_init();
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
     }
+    ESP_ERROR_CHECK(ret);
 
-    /* 2. 初始化LED/开关控制 */
-    led_control_init();
+    device_id_init();
+    switch_control_init();
 
-    /* 3. 初始化WiFi（阻塞） - 必须在device_id之前，因为需要MAC地址 */
+    status_led_init();
+    status_led_set_state(STATUS_LED_STARTUP);
+
+    wifi_manager_set_state_change_cb(on_wifi_state_change);
+    status_led_set_state(STATUS_LED_WIFI_CONNECTING);
     wifi_manager_init();
 
-    /* 4. 初始化设备ID - WiFi连接后才能读取MAC地址 */
-    device_id_init();
-
-    /* 5. 初始化MQTT */
+    status_led_set_state(STATUS_LED_MQTT_CONNECTING);
     mqtt_ha_init();
 
-    /* 6. 初始化OTA */
-    ota_upgrade_init();
+    status_led_set_state(STATUS_LED_READY);
 
-    /* 7. 启动RSSI上报 */
-    rssi_reporter_start();
-
-    /* 打印设备能力 */
-    device_caps_t caps = get_device_capabilities();
-    ESP_LOGI(TAG, "============================================");
-    ESP_LOGI(TAG, "  System ready!");
-    ESP_LOGI(TAG, "  Device: %s", base_device_name);
-    ESP_LOGI(TAG, "  PWM RGB: %d", caps.pwm_rgb_count);
-    ESP_LOGI(TAG, "  Single:  %d", caps.pwm_single_count);
-    ESP_LOGI(TAG, "  WS2812:  %d", caps.ws2812_count);
-    ESP_LOGI(TAG, "  Switch:  %d", caps.switch_count);
-    ESP_LOGI(TAG, "============================================");
+    ESP_LOGI(TAG, "System ready");
+    ESP_LOGI(TAG, "Firmware version: %s", FIRMWARE_VERSION);
 }

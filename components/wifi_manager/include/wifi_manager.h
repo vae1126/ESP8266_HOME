@@ -1,42 +1,24 @@
-/**
- * @file    wifi_manager.h
- * @brief   Wi-Fi管理模块
- *
- * 支持多凭据存储、SmartConfig配网、自动重连
- */
-
 #ifndef WIFI_MANAGER_H
 #define WIFI_MANAGER_H
 
-#include "freertos/FreeRTOS.h"
+#include "esp_event.h"
 #include "freertos/event_groups.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+typedef enum {
+    WIFI_STATE_CONNECTING,
+    WIFI_STATE_SMARTCONFIG,
+    WIFI_STATE_CONNECTED,
+} wifi_manager_state_t;
 
-/* 事件位定义 */
+typedef void (*wifi_state_change_cb_t)(wifi_manager_state_t state);
+
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
-/* 最大WiFi凭据数量 */
-#define MAX_WIFI_CREDS 3
-
-/**
- * @brief  初始化Wi-Fi管理器
- *
- * 阻塞函数，连接成功后才返回
- * 如果没有保存的凭据，自动进入SmartConfig配网
- */
 void wifi_manager_init(void);
 
-/**
- * @brief  获取Wi-Fi事件组句柄
- */
 EventGroupHandle_t wifi_manager_get_event_group(void);
 
-#ifdef __cplusplus
-}
-#endif
+void wifi_manager_set_state_change_cb(wifi_state_change_cb_t cb);
 
-#endif // WIFI_MANAGER_H
+#endif /* WIFI_MANAGER_H */

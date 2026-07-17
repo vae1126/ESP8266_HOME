@@ -1,0 +1,122 @@
+menu "Switch Configuration"
+
+    config DEVICE_TYPE_SWITCH
+        bool "Enable Switch/Relay Device"
+        default y
+        help
+            Enable switch/relay device control via GPIO.
+
+    config SWITCH_COUNT
+        int "Number of switches"
+        depends on DEVICE_TYPE_SWITCH
+        range 1 8
+        default 1
+        help
+            Number of switch/relay devices (1-8).
+
+    config SWITCH_1_GPIO
+        int "Switch 1 GPIO"
+        depends on DEVICE_TYPE_SWITCH
+        default 4
+        help
+            GPIO pin for switch 1.
+
+    config SWITCH_1_ACTIVE_HIGH
+        bool "Switch 1 Active High"
+        depends on DEVICE_TYPE_SWITCH
+        default y
+        help
+            When enabled, GPIO high = switch ON. When disabled, GPIO low = switch ON.
+
+    config SWITCH_2_GPIO
+        int "Switch 2 GPIO"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 2
+        range 0 16
+        default 5
+        help
+            GPIO pin for switch 2.
+
+    config SWITCH_2_ACTIVE_HIGH
+        bool "Switch 2 Active High"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 2
+        default y
+
+    config SWITCH_3_GPIO
+        int "Switch 3 GPIO"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 3
+        range 0 16
+        default 12
+        help
+            GPIO pin for switch 3.
+
+    config SWITCH_3_ACTIVE_HIGH
+        bool "Switch 3 Active High"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 3
+        default y
+
+    config SWITCH_4_GPIO
+        int "Switch 4 GPIO"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 4
+        range 0 16
+        default 13
+        help
+            GPIO pin for switch 4.
+
+    config SWITCH_4_ACTIVE_HIGH
+        bool "Switch 4 Active High"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 4
+        default y
+
+    config SWITCH_5_GPIO
+        int "Switch 5 GPIO"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 5
+        range 0 16
+        default 14
+        help
+            GPIO pin for switch 5.
+
+    config SWITCH_5_ACTIVE_HIGH
+        bool "Switch 5 Active High"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 5
+        default y
+
+    config SWITCH_6_GPIO
+        int "Switch 6 GPIO"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 6
+        range 0 16
+        default 15
+        help
+            GPIO pin for switch 6.
+
+    config SWITCH_6_ACTIVE_HIGH
+        bool "Switch 6 Active High"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 6
+        default y
+
+    config SWITCH_7_GPIO
+        int "Switch 7 GPIO"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 7
+        range 0 16
+        default 16
+        help
+            GPIO pin for switch 7.
+
+    config SWITCH_7_ACTIVE_HIGH
+        bool "Switch 7 Active High"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 7
+        default y
+
+    config SWITCH_8_GPIO
+        int "Switch 8 GPIO"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 8
+        range 0 16
+        default 2
+        help
+            GPIO pin for switch 8.
+
+    config SWITCH_8_ACTIVE_HIGH
+        bool "Switch 8 Active High"
+        depends on DEVICE_TYPE_SWITCH && SWITCH_COUNT >= 8
+        default y
+
+endmenu
