@@ -280,27 +280,16 @@ void mqtt_ha_report_device_status(void)
         rssi = ap_info.rssi;
     }
 
-    cJSON *root = cJSON_CreateObject();
-    if (!root) { ESP_LOGE(TAG, "Status: OOM"); return; }
-
-    cJSON_AddStringToObject(root, "name", base_device_name);
-    cJSON_AddStringToObject(root, "mac", mac_str);
-    cJSON_AddStringToObject(root, "ip", ip_str);
-    cJSON_AddStringToObject(root, "version", FIRMWARE_VERSION);
-    cJSON_AddStringToObject(root, "hardware", CONFIG_IDF_TARGET);
-    cJSON_AddStringToObject(root, "device_type", "relay");
-    cJSON_AddNumberToObject(root, "rssi", rssi);
-    cJSON_AddNumberToObject(root, "uptime", esp_timer_get_time() / 1000000);
-    cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
-
-    char *payload = cJSON_PrintUnformatted(root);
-    if (payload) {
-        publish(device_status_topic, payload, 0);
-        cJSON_free(payload);
-    } else {
-        ESP_LOGE(TAG, "Status: cJSON print OOM");
-    }
-    cJSON_Delete(root);
+    char payload[512];
+    int uptime = esp_timer_get_time() / 1000000;
+    int free_h = esp_get_free_heap_size();
+    snprintf(payload, sizeof(payload),
+        "{\"name\":\"%s\",\"mac\":\"%s\",\"ip\":\"%s\",\"version\":\"%s\","
+        "\"hardware\":\"%s\",\"device_type\":\"relay\",\"rssi\":%d,"
+        "\"uptime\":%d,\"free_heap\":%d}",
+        base_device_name, mac_str, ip_str, FIRMWARE_VERSION,
+        CONFIG_IDF_TARGET, rssi, uptime, free_h);
+    publish(device_status_topic, payload, 0);
 }
 
 void mqtt_ha_publish_discovery(void)
