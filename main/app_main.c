@@ -3,6 +3,7 @@
 #include "switch_control.h"
 #include "status_led.h"
 #include "mqtt_ha.h"
+#include "ota_upgrade.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 
@@ -46,6 +47,8 @@ void app_main(void)
 
     status_led_set_state(STATUS_LED_MQTT_CONNECTING);
     mqtt_ha_init();
+
+    ota_upgrade_init();
 
     status_led_set_state(STATUS_LED_READY);
 
