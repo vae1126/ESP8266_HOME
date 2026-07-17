@@ -281,28 +281,14 @@ void mqtt_ha_report_device_status(void)
     }
 
     cJSON *root = cJSON_CreateObject();
+    if (!root) { ESP_LOGE(TAG, "Status: OOM"); return; }
+
     cJSON_AddStringToObject(root, "name", base_device_name);
     cJSON_AddStringToObject(root, "mac", mac_str);
     cJSON_AddStringToObject(root, "ip", ip_str);
     cJSON_AddStringToObject(root, "version", FIRMWARE_VERSION);
     cJSON_AddStringToObject(root, "hardware", CONFIG_IDF_TARGET);
-
-    cJSON *types_arr = cJSON_CreateArray();
-#if defined(CONFIG_DEVICE_TYPE_SWITCH)
-    cJSON_AddItemToArray(types_arr, cJSON_CreateString("relay"));
-#endif
-    cJSON_AddItemToObject(root, "device_types", types_arr);
-
     cJSON_AddStringToObject(root, "device_type", "relay");
-
-    const device_caps_t *device_caps = get_device_capabilities();
-    cJSON *caps = cJSON_CreateObject();
-    cJSON_AddBoolToObject(caps, "power", device_caps->support_power);
-    cJSON_AddBoolToObject(caps, "brightness", device_caps->support_brightness);
-    cJSON_AddBoolToObject(caps, "color_temp", device_caps->support_color_temp);
-    cJSON_AddBoolToObject(caps, "color", device_caps->support_color);
-    cJSON_AddItemToObject(root, "capabilities", caps);
-
     cJSON_AddNumberToObject(root, "rssi", rssi);
     cJSON_AddNumberToObject(root, "uptime", esp_timer_get_time() / 1000000);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
@@ -311,6 +297,8 @@ void mqtt_ha_report_device_status(void)
     if (payload) {
         publish(device_status_topic, payload, 0);
         cJSON_free(payload);
+    } else {
+        ESP_LOGE(TAG, "Status: cJSON print OOM");
     }
     cJSON_Delete(root);
 }

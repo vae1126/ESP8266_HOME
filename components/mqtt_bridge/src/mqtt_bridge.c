@@ -69,6 +69,7 @@ void mqtt_bridge_init(const char *broker_url, const char *client_id,
     esp_mqtt_client_config_t cfg = {
         .uri = broker_url,
         .client_id = client_id,
+        .keepalive = 60,
     };
 
     if (lwt_topic) {
@@ -95,9 +96,13 @@ esp_mqtt_client_handle_t mqtt_bridge_get_client(void)
 
 int mqtt_bridge_publish(const char *topic, const char *payload, int retain)
 {
-    if (!s_client) return -1;
+    if (!s_client || !s_connected) {
+        ESP_LOGW(TAG, "Publish skip (not connected): %s", topic);
+        return -1;
+    }
     int msg_id = esp_mqtt_client_publish(s_client, topic, payload, 0, 1, retain);
-    if (msg_id < 0) ESP_LOGW(TAG, "Publish failed: %s", topic);
+    if (msg_id < 0) ESP_LOGW(TAG, "Publish failed(%d): %s", msg_id, topic);
+    else ESP_LOGI(TAG, "Published [%d]: %s", msg_id, topic);
     return msg_id;
 }
 
