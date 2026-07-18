@@ -102,7 +102,6 @@ int mqtt_bridge_publish(const char *topic, const char *payload, int retain)
     }
     int msg_id = esp_mqtt_client_publish(s_client, topic, payload, 0, 1, retain);
     if (msg_id < 0) ESP_LOGW(TAG, "Publish failed(%d): %s", msg_id, topic);
-    else ESP_LOGI(TAG, "Published [%d]: %s", msg_id, topic);
     return msg_id;
 }
 
