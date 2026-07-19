@@ -146,10 +146,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         if (sc_in_progress) {
             ESP_LOGI(TAG, "SmartConfig active, skipping reconnect");
-        } else if (retry_count < WIFI_MAX_RETRIES) {
+        } else {
             retry_count++;
-            ESP_LOGI(TAG, "Wi-Fi disconnected, retry %d/%d (backoff %dms)",
-                     retry_count, WIFI_MAX_RETRIES, backoff_ms);
+            ESP_LOGI(TAG, "Wi-Fi disconnected, retry %d (backoff %dms)", retry_count, backoff_ms);
 
             if (s_reconnect_task_handle == NULL) {
                 BaseType_t ret = xTaskCreate(reconnect_task, "wifi_reconnect", 2048,
@@ -165,16 +164,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
             backoff_ms = (backoff_ms < WIFI_MAX_BACKOFF_MS / 2)
                          ? backoff_ms * 2 : WIFI_MAX_BACKOFF_MS;
-
-            if (wifi_watchdog_timer && xTimerIsTimerActive(wifi_watchdog_timer) == pdFALSE) {
-                xTimerStart(wifi_watchdog_timer, portMAX_DELAY);
-                ESP_LOGW(TAG, "Wi-Fi watchdog started (%d seconds)", WIFI_WATCHDOG_SECONDS);
-            }
-        } else {
-            ESP_LOGI(TAG, "Wi-Fi failed after %d retries, restarting...", WIFI_MAX_RETRIES);
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            vTaskDelay(pdMS_TO_TICKS(500));
-            esp_restart();
         }
     }
 
