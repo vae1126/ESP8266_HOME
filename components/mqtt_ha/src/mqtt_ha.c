@@ -296,3 +296,8 @@ void mqtt_ha_publish_discovery(void)
 {
     publish_all_discovery_configs();
 }
+
+void mqtt_ha_publish_states(void)
+{
+    publish_all_states();
+}

@@ -11,6 +11,7 @@ typedef enum {
 } wifi_manager_state_t;
 
 typedef void (*wifi_state_change_cb_t)(wifi_manager_state_t state);
+typedef void (*local_ctrl_cb_t)(void);
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -20,5 +21,6 @@ void wifi_manager_init(void);
 EventGroupHandle_t wifi_manager_get_event_group(void);
 
 void wifi_manager_set_state_change_cb(wifi_state_change_cb_t cb);
+void wifi_manager_set_local_ctrl_cb(local_ctrl_cb_t cb);
 
 #endif /* WIFI_MANAGER_H */

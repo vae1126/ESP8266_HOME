@@ -24,6 +24,13 @@ static void on_wifi_state_change(wifi_manager_state_t state)
     }
 }
 
+static void on_local_ctrl(void)
+{
+    bool on = led_switch_get_state(0);
+    led_switch_set_state(0, !on);
+    mqtt_ha_publish_states();
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting application...");
@@ -42,6 +49,7 @@ void app_main(void)
     status_led_set_state(STATUS_LED_STARTUP);
 
     wifi_manager_set_state_change_cb(on_wifi_state_change);
+    wifi_manager_set_local_ctrl_cb(on_local_ctrl);
     status_led_set_state(STATUS_LED_WIFI_CONNECTING);
     wifi_manager_init();
 

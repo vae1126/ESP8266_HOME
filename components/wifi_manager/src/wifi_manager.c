@@ -19,10 +19,16 @@ static TimerHandle_t wifi_watchdog_timer = NULL;
 static TaskHandle_t s_reconnect_task_handle = NULL;
 static volatile bool sc_in_progress = false;
 static wifi_state_change_cb_t s_state_change_cb = NULL;
+static local_ctrl_cb_t s_local_ctrl_cb = NULL;
 
 void wifi_manager_set_state_change_cb(wifi_state_change_cb_t cb)
 {
     s_state_change_cb = cb;
+}
+
+void wifi_manager_set_local_ctrl_cb(local_ctrl_cb_t cb)
+{
+    s_local_ctrl_cb = cb;
 }
 
 EventGroupHandle_t wifi_manager_get_event_group(void)
@@ -280,8 +286,6 @@ void wifi_manager_init(void)
 
 static void boot_button_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "BOOT button monitor task started");
-
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << BOOT_GPIO),
         .mode = GPIO_MODE_INPUT,
@@ -291,21 +295,18 @@ static void boot_button_task(void *pvParameters)
     };
     gpio_config(&io_conf);
 
-    ESP_LOGI(TAG, "BOOT GPIO level: %d", gpio_get_level(BOOT_GPIO));
-
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(100));
 
-        int level = gpio_get_level(BOOT_GPIO);
-        if (level == 0) {
-            int hold_count = 1;
+        if (gpio_get_level(BOOT_GPIO) != 0) continue;
 
-            for (int i = 1; i < BOOT_HOLD_SECONDS * 10; i++) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-                if (gpio_get_level(BOOT_GPIO) == 0) {
-                    hold_count++;
-                    if (hold_count >= BOOT_HOLD_SECONDS * 10) {
-                        ESP_LOGI(TAG, "BOOT button held for %d seconds, starting SmartConfig", BOOT_HOLD_SECONDS);
+        int hold_count = 1;
+        for (int i = 1; i < BOOT_HOLD_SECONDS * 10; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (gpio_get_level(BOOT_GPIO) == 0) {
+                hold_count++;
+                if (hold_count >= BOOT_HOLD_SECONDS * 10) {
+                    ESP_LOGI(TAG, "BOOT button held for %d seconds, starting SmartConfig", BOOT_HOLD_SECONDS);
 
                         if (sc_in_progress) {
                             ESP_LOGW(TAG, "SmartConfig already in progress, ignoring button trigger");
@@ -336,9 +337,11 @@ static void boot_button_task(void *pvParameters)
                         break;
                     }
                 } else {
+                    if (hold_count > 0 && hold_count < 5 && s_local_ctrl_cb) {
+                        s_local_ctrl_cb();
+                    }
                     break;
                 }
             }
-        }
     }
 }
